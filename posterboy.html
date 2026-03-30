@@ -209,8 +209,9 @@
   <!-- Setup screen -->
   <div id="setup">
     <h1>Posterboy</h1>
-    <p>Enter your ntfy topic to get started. It's stored only on this device.</p>
-    <input id="topic-input" type="text" placeholder="your-secret-topic" autocorrect="off" autocapitalize="none" spellcheck="false" />
+    <p>Stored only on this device.</p>
+    <input id="topic-input" type="text" placeholder="topic" autocorrect="off" autocapitalize="none" spellcheck="false" />
+    <input id="username-input" type="text" placeholder="your name" autocorrect="off" autocapitalize="none" spellcheck="false" />
     <button id="save-btn" disabled>Connect</button>
   </div>
 
@@ -233,54 +234,53 @@
     const NTFY = "https://ntfy.sh";
 
     // ── State ────────────────────────────────────────────────────
-    const STORAGE_MY_IDS = "myIds";
-
-    let topic = localStorage.getItem("topic") || "";
+    let topic    = localStorage.getItem("topic") || "";
+    let username = localStorage.getItem("username") || "";
     let messages = [];
-    let lastId = null;
-    let sentEcho = [];   // echo suppression for in-session dedup
+    let lastId   = null;
     let lastCount = 0;
     let streamAbort = null;
-    let seenIds = new Set();  // dedup cache
-
-    // IDs of messages we sent — persisted so refresh shows them as "me"
-    let myIds = new Set(JSON.parse(localStorage.getItem(STORAGE_MY_IDS) || "[]"));
-
-    function saveMyIds() {
-      // cap at 500 entries to avoid unbounded growth
-      const arr = [...myIds].slice(-500);
-      localStorage.setItem(STORAGE_MY_IDS, JSON.stringify(arr));
-    }
+    let seenIds = new Set();  // dedup by message ID
 
     // ── Setup screen ─────────────────────────────────────────────
-    const setupEl   = document.getElementById("setup");
-    const chatEl    = document.getElementById("chat");
-    const topicInput = document.getElementById("topic-input");
-    const saveBtn   = document.getElementById("save-btn");
-    const settingsBtn = document.getElementById("settings-btn");
+    const setupEl      = document.getElementById("setup");
+    const chatEl       = document.getElementById("chat");
+    const topicInput    = document.getElementById("topic-input");
+    const usernameInput = document.getElementById("username-input");
+    const saveBtn      = document.getElementById("save-btn");
+    const settingsBtn  = document.getElementById("settings-btn");
 
-    topicInput.addEventListener("input", () => {
-      saveBtn.disabled = topicInput.value.trim() === "";
+    function validateSetup() {
+      saveBtn.disabled = topicInput.value.trim() === "" || usernameInput.value.trim() === "";
+    }
+
+    topicInput.addEventListener("input", validateSetup);
+    usernameInput.addEventListener("input", validateSetup);
+
+    [topicInput, usernameInput].forEach(el => {
+      el.addEventListener("keydown", e => {
+        if (e.key === "Enter" && !saveBtn.disabled) saveSettings();
+      });
     });
 
-    topicInput.addEventListener("keydown", e => {
-      if (e.key === "Enter" && !saveBtn.disabled) saveTopic();
-    });
+    saveBtn.addEventListener("click", saveSettings);
 
-    saveBtn.addEventListener("click", saveTopic);
-
-    function saveTopic() {
+    function saveSettings() {
       const t = topicInput.value.trim();
-      if (!t) return;
+      const u = usernameInput.value.trim();
+      if (!t || !u) return;
       topic = t;
+      username = u;
       localStorage.setItem("topic", topic);
+      localStorage.setItem("username", username);
       showChat();
     }
 
     settingsBtn.addEventListener("click", () => {
       if (streamAbort) { streamAbort.abort(); streamAbort = null; }
       topicInput.value = topic;
-      saveBtn.disabled = false;
+      usernameInput.value = username;
+      validateSetup();
       chatEl.style.display = "none";
       setupEl.style.display = "flex";
       setTimeout(() => topicInput.focus(), 50);
@@ -292,9 +292,7 @@
       messages = [];
       lastId = null;
       lastCount = 0;
-      sentEcho = [];
       seenIds = new Set();
-      myIds = new Set(JSON.parse(localStorage.getItem(STORAGE_MY_IDS) || "[]"));
       startStream();
     }
 
@@ -342,19 +340,8 @@
       const body = data.message || "";
       if (!body) return;
 
-      // Identify sender: check persistent myIds first, then in-session echo
-      if (myIds.has(data.id)) {
-        messages.push({ text: body, sender: "me" });
-        render();
-        return;
-      }
-
-      const echoIdx = sentEcho.indexOf(body);
-      if (echoIdx !== -1) {
-        sentEcho.splice(echoIdx, 1);
-        return;
-      }
-      messages.push({ text: body, sender: "them" });
+      const sender = data.title === username ? "me" : "them";
+      messages.push({ text: body, sender });
       render();
     }
 
@@ -422,18 +409,15 @@
       sendBtn.disabled = true;
 
       messages.push({ text, sender: "me" });
-      sentEcho.push(text);
       render();
       scrollToBottom();
 
       try {
-        const res = await fetch(`${NTFY}/${topic}`, { method: "POST", body: text });
-        const data = await res.json();
-        if (data.id) {
-          myIds.add(data.id);
-          seenIds.add(data.id);  // prevent it being processed again from stream
-          saveMyIds();
-        }
+        await fetch(`${NTFY}/${topic}`, {
+          method: "POST",
+          body: text,
+          headers: { "Title": username },
+        });
       } catch (_) {}
     }
 
@@ -453,9 +437,12 @@
     sendBtn.addEventListener("click", sendMessage);
 
     // ── Boot ─────────────────────────────────────────────────────
-    if (topic) {
+    if (topic && username) {
       showChat();
     } else {
+      topicInput.value = topic;
+      usernameInput.value = username;
+      validateSetup();
       setupEl.style.display = "flex";
       setTimeout(() => topicInput.focus(), 50);
     }
