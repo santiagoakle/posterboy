@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Posterboy" />
+  <title>Posterboy</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      overflow: hidden;
+    }
+
+    /* ── Setup screen ───────────────────────────────────────────── */
+    #setup {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100dvh;
+      padding: 32px 24px;
+      gap: 16px;
+    }
+
+    #setup h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #1a1a2e;
+    }
+
+    #setup p {
+      font-size: 0.9rem;
+      color: #666;
+      text-align: center;
+      max-width: 300px;
+      line-height: 1.5;
+    }
+
+    #setup input {
+      width: 100%;
+      max-width: 320px;
+      border: 1.5px solid #ddd;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 1rem;
+      outline: none;
+      background: #fff;
+      text-align: center;
+      letter-spacing: 1px;
+    }
+
+    #setup input:focus { border-color: #1a1a2e; }
+
+    #setup button {
+      width: 100%;
+      max-width: 320px;
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #setup button:disabled { opacity: 0.35; cursor: default; }
+
+    /* ── Chat screen ────────────────────────────────────────────── */
+    #chat { display: none; flex-direction: column; height: 100dvh; }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 14px 16px;
+      padding-top: calc(14px + env(safe-area-inset-top));
+      font-size: 1.1rem;
+      font-weight: 600;
+      flex-shrink: 0;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    #settings-btn {
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 1.2rem;
+      cursor: pointer;
+      padding: 4px;
+      opacity: 0.7;
+    }
+
+    #status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #888;
+      display: inline-block;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    #status-dot.connected { background: #4caf50; }
+    #status-dot.error     { background: #f44336; }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scroll-behavior: smooth;
+    }
+
+    .bubble {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 18px;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .bubble.me {
+      background: #1a1a2e;
+      color: #fff;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bubble.them {
+      background: #fff;
+      color: #1a1a2e;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    .empty-hint {
+      text-align: center;
+      color: #aaa;
+      font-size: 0.85rem;
+      margin-top: auto;
+      margin-bottom: auto;
+    }
+
+    #input-area {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      padding-bottom: calc(10px + env(safe-area-inset-bottom));
+      background: #fff;
+      border-top: 1px solid #ddd;
+      flex-shrink: 0;
+    }
+
+    #text-input {
+      flex: 1;
+      border: 1px solid #ddd;
+      border-radius: 22px;
+      padding: 10px 16px;
+      font-size: 1rem;
+      outline: none;
+      resize: none;
+      max-height: 120px;
+      overflow-y: auto;
+      line-height: 1.4;
+      background: #f8f8f8;
+    }
+
+    #text-input:focus { border-color: #1a1a2e; background: #fff; }
+
+    #send-btn {
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 42px;
+      height: 42px;
+      flex-shrink: 0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      transition: opacity 0.15s;
+    }
+
+    #send-btn:active  { opacity: 0.7; }
+    #send-btn:disabled { opacity: 0.35; cursor: default; }
+  </style>
+</head>
+<body>
+
+  <!-- Setup screen -->
+  <div id="setup">
+    <h1>Posterboy</h1>
+    <p>Enter your ntfy topic to get started. It's stored only on this device.</p>
+    <input id="topic-input" type="text" placeholder="your-secret-topic" autocorrect="off" autocapitalize="none" spellcheck="false" />
+    <button id="save-btn" disabled>Connect</button>
+  </div>
+
+  <!-- Chat screen -->
+  <div id="chat">
+    <header>
+      <span><span id="status-dot"></span>Posterboy</span>
+      <button id="settings-btn" title="Change topic">⚙</button>
+    </header>
+    <div id="messages">
+      <p class="empty-hint">No messages yet</p>
+    </div>
+    <div id="input-area">
+      <textarea id="text-input" rows="1" placeholder="Message…"></textarea>
+      <button id="send-btn" disabled>&#9650;</button>
+    </div>
+  </div>
+
+  <script>
+    const NTFY = "https://ntfy.sh";
+
+    // ── State ────────────────────────────────────────────────────
+    let topic = localStorage.getItem("topic") || "";
+    let messages = [];
+    let lastId = null;
+    let sentEcho = [];   // echo suppression
+    let lastCount = 0;
+    let streamAbort = null;
+
+    // ── Setup screen ─────────────────────────────────────────────
+    const setupEl   = document.getElementById("setup");
+    const chatEl    = document.getElementById("chat");
+    const topicInput = document.getElementById("topic-input");
+    const saveBtn   = document.getElementById("save-btn");
+    const settingsBtn = document.getElementById("settings-btn");
+
+    topicInput.addEventListener("input", () => {
+      saveBtn.disabled = topicInput.value.trim() === "";
+    });
+
+    topicInput.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !saveBtn.disabled) saveTopic();
+    });
+
+    saveBtn.addEventListener("click", saveTopic);
+
+    function saveTopic() {
+      const t = topicInput.value.trim();
+      if (!t) return;
+      topic = t;
+      localStorage.setItem("topic", topic);
+      showChat();
+    }
+
+    settingsBtn.addEventListener("click", () => {
+      if (streamAbort) { streamAbort.abort(); streamAbort = null; }
+      topicInput.value = topic;
+      saveBtn.disabled = false;
+      chatEl.style.display = "none";
+      setupEl.style.display = "flex";
+      setTimeout(() => topicInput.focus(), 50);
+    });
+
+    function showChat() {
+      setupEl.style.display = "none";
+      chatEl.style.display = "flex";
+      messages = [];
+      lastId = null;
+      lastCount = 0;
+      sentEcho = [];
+      startStream();
+    }
+
+    // ── Rendering ────────────────────────────────────────────────
+    const messagesEl = document.getElementById("messages");
+
+    function escapeHtml(s) {
+      return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function render() {
+      if (messages.length === 0) {
+        messagesEl.innerHTML = '<p class="empty-hint">No messages yet</p>';
+        lastCount = 0;
+        return;
+      }
+      const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
+      const hasNew = messages.length > lastCount;
+      lastCount = messages.length;
+      messagesEl.innerHTML = messages.map(m =>
+        `<div class="bubble ${m.sender}">${escapeHtml(m.text)}</div>`
+      ).join("");
+      if (hasNew && atBottom) scrollToBottom();
+    }
+
+    // ── Status dot ───────────────────────────────────────────────
+    const dot = document.getElementById("status-dot");
+    function setStatus(s) {
+      dot.className = "";
+      if (s) dot.classList.add(s);
+    }
+
+    // ── ntfy helpers ─────────────────────────────────────────────
+    function processEvent(data) {
+      if (data.id) lastId = data.id;
+      if (data.event !== "message") return;
+      const body = data.message || "";
+      if (!body) return;
+
+      const echoIdx = sentEcho.indexOf(body);
+      if (echoIdx !== -1) {
+        sentEcho.splice(echoIdx, 1);
+        return;
+      }
+      messages.push({ text: body, sender: "them" });
+      render();
+    }
+
+    async function poll() {
+      let url = `${NTFY}/${topic}/json?poll=1`;
+      if (lastId) url += `&since=${lastId}`;
+      try {
+        const res = await fetch(url);
+        const text = await res.text();
+        for (const line of text.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          try { processEvent(JSON.parse(t)); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    async function stream(signal) {
+      let url = `${NTFY}/${topic}/json`;
+      if (lastId) url += `?since=${lastId}`;
+      setStatus("connected");
+      const res = await fetch(url, { signal });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t) continue;
+          try { processEvent(JSON.parse(t)); } catch (_) {}
+        }
+      }
+    }
+
+    async function startStream() {
+      while (true) {
+        await poll();
+        streamAbort = new AbortController();
+        try {
+          await stream(streamAbort.signal);
+        } catch (e) {
+          if (e.name === "AbortError") return;   // user navigated to settings
+        }
+        setStatus("error");
+        await new Promise(r => setTimeout(r, 2000));
+        setStatus("");
+      }
+    }
+
+    // ── Sending ──────────────────────────────────────────────────
+    const inputEl  = document.getElementById("text-input");
+    const sendBtn  = document.getElementById("send-btn");
+
+    async function sendMessage() {
+      const text = inputEl.value.trim();
+      if (!text || !topic) return;
+      inputEl.value = "";
+      inputEl.style.height = "auto";
+      sendBtn.disabled = true;
+
+      messages.push({ text, sender: "me" });
+      sentEcho.push(text);
+      render();
+      scrollToBottom();
+
+      try {
+        await fetch(`${NTFY}/${topic}`, { method: "POST", body: text });
+      } catch (_) {}
+    }
+
+    inputEl.addEventListener("input", () => {
+      sendBtn.disabled = inputEl.value.trim() === "";
+      inputEl.style.height = "auto";
+      inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + "px";
+    });
+
+    inputEl.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (!sendBtn.disabled) sendMessage();
+      }
+    });
+
+    sendBtn.addEventListener("click", sendMessage);
+
+    // ── Boot ─────────────────────────────────────────────────────
+    if (topic) {
+      showChat();
+    } else {
+      setupEl.style.display = "flex";
+      setTimeout(() => topicInput.focus(), 50);
+    }
+  </script>
+</body>
+</html>
