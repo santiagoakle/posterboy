@@ -233,13 +233,24 @@
     const NTFY = "https://ntfy.sh";
 
     // ── State ────────────────────────────────────────────────────
+    const STORAGE_MY_IDS = "myIds";
+
     let topic = localStorage.getItem("topic") || "";
     let messages = [];
     let lastId = null;
-    let sentEcho = [];   // echo suppression
+    let sentEcho = [];   // echo suppression for in-session dedup
     let lastCount = 0;
     let streamAbort = null;
     let seenIds = new Set();  // dedup cache
+
+    // IDs of messages we sent — persisted so refresh shows them as "me"
+    let myIds = new Set(JSON.parse(localStorage.getItem(STORAGE_MY_IDS) || "[]"));
+
+    function saveMyIds() {
+      // cap at 500 entries to avoid unbounded growth
+      const arr = [...myIds].slice(-500);
+      localStorage.setItem(STORAGE_MY_IDS, JSON.stringify(arr));
+    }
 
     // ── Setup screen ─────────────────────────────────────────────
     const setupEl   = document.getElementById("setup");
@@ -283,6 +294,7 @@
       lastCount = 0;
       sentEcho = [];
       seenIds = new Set();
+      myIds = new Set(JSON.parse(localStorage.getItem(STORAGE_MY_IDS) || "[]"));
       startStream();
     }
 
@@ -329,6 +341,13 @@
       if (data.event !== "message") return;
       const body = data.message || "";
       if (!body) return;
+
+      // Identify sender: check persistent myIds first, then in-session echo
+      if (myIds.has(data.id)) {
+        messages.push({ text: body, sender: "me" });
+        render();
+        return;
+      }
 
       const echoIdx = sentEcho.indexOf(body);
       if (echoIdx !== -1) {
@@ -378,6 +397,7 @@
     async function startStream() {
       while (true) {
         await poll();
+        scrollToBottom();
         streamAbort = new AbortController();
         try {
           await stream(streamAbort.signal);
@@ -407,7 +427,13 @@
       scrollToBottom();
 
       try {
-        await fetch(`${NTFY}/${topic}`, { method: "POST", body: text });
+        const res = await fetch(`${NTFY}/${topic}`, { method: "POST", body: text });
+        const data = await res.json();
+        if (data.id) {
+          myIds.add(data.id);
+          seenIds.add(data.id);  // prevent it being processed again from stream
+          saveMyIds();
+        }
       } catch (_) {}
     }
 
