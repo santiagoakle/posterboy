@@ -239,6 +239,7 @@
     let sentEcho = [];   // echo suppression
     let lastCount = 0;
     let streamAbort = null;
+    let seenIds = new Set();  // dedup cache
 
     // ── Setup screen ─────────────────────────────────────────────
     const setupEl   = document.getElementById("setup");
@@ -281,6 +282,7 @@
       lastId = null;
       lastCount = 0;
       sentEcho = [];
+      seenIds = new Set();
       startStream();
     }
 
@@ -319,7 +321,11 @@
 
     // ── ntfy helpers ─────────────────────────────────────────────
     function processEvent(data) {
-      if (data.id) lastId = data.id;
+      if (data.id) {
+        lastId = data.id;
+        if (seenIds.has(data.id)) return;
+        seenIds.add(data.id);
+      }
       if (data.event !== "message") return;
       const body = data.message || "";
       if (!body) return;
