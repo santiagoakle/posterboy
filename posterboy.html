@@ -241,6 +241,7 @@
     let lastCount = 0;
     let streamAbort = null;
     let seenIds = new Set();  // dedup by message ID
+    let pendingSends = new Set(); // texts sent but not yet echoed back
 
     // ── Setup screen ─────────────────────────────────────────────
     const setupEl      = document.getElementById("setup");
@@ -293,6 +294,7 @@
       lastId = null;
       lastCount = 0;
       seenIds = new Set();
+      pendingSends = new Set();
       startStream();
     }
 
@@ -341,6 +343,10 @@
       if (!body) return;
 
       const sender = data.title === username ? "me" : "them";
+      if (sender === "me" && pendingSends.has(body)) {
+        pendingSends.delete(body);
+        return;
+      }
       messages.push({ text: body, sender });
       render();
     }
@@ -408,6 +414,7 @@
       inputEl.style.height = "auto";
       sendBtn.disabled = true;
 
+      pendingSends.add(text);
       messages.push({ text, sender: "me" });
       render();
       scrollToBottom();
@@ -420,7 +427,10 @@
         });
         const data = await res.json();
         if (data.id) seenIds.add(data.id);
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        pendingSends.delete(text);
+      }
     }
 
     inputEl.addEventListener("input", () => {
