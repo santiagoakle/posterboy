@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """
-sandbox_postman -- bridge between ntfy and a tmux session inside a Docker container.
+sandbox_postman -- bridge between ntfy and a tmux pane (local or inside Docker).
 
 Usage:
-  sandbox_postman --container <id> --tmux <session:pane> --path <dir> [--topic <topic>]
+  sandbox_postman --topic <topic> [--container <id>] [--claude-pane <target>]
+                  [--tmux <target>] [--path <dir>] [--stable-secs <n>]
 
-  --container   Docker container ID or name
-  --tmux        tmux target, e.g. "mysession:0.0" or "0:0"
-  --path        directory that contains (or will contain) notifications/outbox.txt
-  --topic       ntfy topic
+  --topic         ntfy topic (required)
+  --container     Docker container ID/name; omit for local tmux
+  --claude-pane   tmux target running Claude Code; inbound ntfy messages are
+                  sent as input, responses captured and published back to ntfy
+  --tmux          tmux target for legacy N:<msg> forwarding (used when
+                  --claude-pane is not set)
+  --path          directory containing notifications/outbox.txt to watch
+  --stable-secs   seconds of no output change before considering Claude idle
+                  (default: 2.0)
 """
 
 import argparse
 import os
+import subprocess
 import threading
 import time
 import json
@@ -24,29 +31,97 @@ NTFY_BASE = "https://ntfy.sh"
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
-_published_echo: deque = deque()   # texts we published; suppress before tmux
+_published_echo: deque = deque()
 _echo_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Docker / tmux helpers
+# tmux / Docker helpers
 # ---------------------------------------------------------------------------
-def tmux_send(container: str, target: str, text: str) -> None:
-    """Push text as key-strokes into a tmux pane inside a Docker container."""
-    cmd = [
-        "docker", "exec", container,
-        "tmux", "send-keys", "-t", target, text, "Enter"
-    ]
+def tmux_send(target: str, text: str, container: str | None = None) -> None:
+    """Send keys to a tmux pane, optionally via docker exec."""
+    if container:
+        cmd = ["docker", "exec", container, "tmux", "send-keys", "-t", target, text, "Enter"]
+    else:
+        cmd = ["tmux", "send-keys", "-t", target, text, "Enter"]
     print(f"[tmux] -> {text!r}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[tmux] error: {result.stderr.strip()}")
 
 
+def capture_pane(target: str, container: str | None = None, lines: int = 500) -> str:
+    """Return the last <lines> lines of a tmux pane as a string."""
+    if container:
+        cmd = ["docker", "exec", container,
+               "tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"]
+    else:
+        cmd = ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout
+
+
+def wait_for_idle(target: str, container: str | None = None,
+                  stable_secs: float = 2.0, poll: float = 0.3,
+                  timeout: float = 120.0) -> str:
+    """Poll pane until output stops changing for stable_secs; return final content."""
+    last = capture_pane(target, container)
+    stable_since = time.time()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(poll)
+        current = capture_pane(target, container)
+        if current != last:
+            last = current
+            stable_since = time.time()
+        elif time.time() - stable_since >= stable_secs:
+            return current
+    return capture_pane(target, container)
+
+
+# ---------------------------------------------------------------------------
+# Claude pane handler
+# ---------------------------------------------------------------------------
+def handle_claude_input(text: str, topic: str, pane: str,
+                        container: str | None, stable_secs: float) -> None:
+    """Send text to the Claude pane, wait for response, publish it back to ntfy."""
+    before = capture_pane(pane, container)
+    before_line_count = len(before.splitlines())
+
+    time.sleep(0.2)
+    tmux_send(pane, text, container)
+    time.sleep(0.5)  # let Claude start before polling
+
+    after = wait_for_idle(pane, container, stable_secs=stable_secs)
+    new_lines = after.splitlines()[before_line_count:]
+    response = "\n".join(new_lines).strip()
+
+    if not response:
+        print("[claude] no new output captured")
+        return
+
+    print(f"[claude] response ({len(response)} chars):\n{response[:200]}{'...' if len(response) > 200 else ''}")
+
+    with _echo_lock:
+        _published_echo.append(response)
+    try:
+        req = urllib.request.Request(
+            f"{NTFY_BASE}/{topic}",
+            data=response.encode(),
+            method="POST",
+            headers={"Title": "claude"},
+        )
+        urllib.request.urlopen(req)
+        print("[claude] response published")
+    except Exception as e:
+        print(f"[claude] publish error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # ntfy subscriber
 # ---------------------------------------------------------------------------
-def ntfy_listener(topic: str, container: str, target: str) -> None:
+def ntfy_listener(topic: str, container: str | None, target: str | None,
+                  claude_pane: str | None, stable_secs: float) -> None:
     print(f"[ntfy] subscribing to topic: {topic}")
     while True:
         try:
@@ -69,6 +144,9 @@ def ntfy_listener(topic: str, container: str, target: str) -> None:
                             continue
                         if data.get("event") != "message":
                             continue
+                        # Skip responses we published ourselves
+                        if data.get("title") == "claude":
+                            continue
                         body = data.get("message", "")
                         if not body:
                             continue
@@ -77,7 +155,14 @@ def ntfy_listener(topic: str, container: str, target: str) -> None:
                                 _published_echo.remove(body)
                                 print(f"[ntfy] filtered echo: {body!r}")
                                 continue
-                        tmux_send(container, target, f"N:{body}")
+                        if claude_pane:
+                            threading.Thread(
+                                target=handle_claude_input,
+                                args=(body, topic, claude_pane, container, stable_secs),
+                                daemon=True,
+                            ).start()
+                        elif target:
+                            tmux_send(target, f"N:{body}", container)
                     else:
                         buf += chunk
         except Exception as e:
@@ -98,7 +183,6 @@ def outbox_monitor(watch_path: str, topic: str) -> None:
                     content = f.read().strip()
                 os.remove(outbox)
                 if content:
-                    print(content, flush=True)
                     print(f"[outbox] publishing: {content!r}")
                     with _echo_lock:
                         _published_echo.append(content)
@@ -122,37 +206,45 @@ def outbox_monitor(watch_path: str, topic: str) -> None:
 def main():
     parser = argparse.ArgumentParser(
         prog="sandbox_postman",
-        description="Bridge ntfy <-> tmux in a Docker container via outbox file."
+        description="Bridge ntfy <-> tmux (local or Docker)."
     )
-    parser.add_argument("--container", required=True, help="Docker container ID or name")
-    parser.add_argument("--tmux", required=True, dest="tmux_target",
-                        help="tmux target, e.g. 'session:window.pane' or '0:0'")
-    parser.add_argument("--path", required=True, dest="watch_path",
+    parser.add_argument("--topic", required=True, help="ntfy topic")
+    parser.add_argument("--container", default=None,
+                        help="Docker container ID/name (omit for local tmux)")
+    parser.add_argument("--claude-pane", default=None, dest="claude_pane",
+                        help="tmux target running Claude Code")
+    parser.add_argument("--tmux", default=None, dest="tmux_target",
+                        help="tmux target for N:<msg> forwarding")
+    parser.add_argument("--path", default=None, dest="watch_path",
                         help="Base directory containing notifications/outbox.txt")
-    parser.add_argument("--topic", required=True,
-                        help="ntfy topic")
+    parser.add_argument("--stable-secs", type=float, default=2.0, dest="stable_secs",
+                        help="Seconds of idle output before capturing Claude response (default: 2.0)")
     args = parser.parse_args()
 
-    # Ensure outbox directory exists
-    os.makedirs(os.path.join(args.watch_path, "notifications"), exist_ok=True)
+    if not args.claude_pane and not args.tmux_target:
+        parser.error("at least one of --claude-pane or --tmux is required")
 
-    # Start ntfy subscriber thread
+    if args.watch_path:
+        os.makedirs(os.path.join(args.watch_path, "notifications"), exist_ok=True)
+
     listener = threading.Thread(
         target=ntfy_listener,
-        args=(args.topic, args.container, args.tmux_target),
+        args=(args.topic, args.container, args.tmux_target, args.claude_pane, args.stable_secs),
         daemon=True,
     )
     listener.start()
 
-    # Start outbox monitor thread
-    monitor = threading.Thread(
-        target=outbox_monitor,
-        args=(args.watch_path, args.topic),
-        daemon=True,
-    )
-    monitor.start()
+    if args.watch_path:
+        monitor = threading.Thread(
+            target=outbox_monitor,
+            args=(args.watch_path, args.topic),
+            daemon=True,
+        )
+        monitor.start()
 
-    print(f"[main] sandbox_postman running. container={args.container} tmux={args.tmux_target} path={args.watch_path}")
+    mode = f"claude-pane={args.claude_pane}" if args.claude_pane else f"tmux={args.tmux_target}"
+    container_info = f" container={args.container}" if args.container else " (local)"
+    print(f"[main] running. {mode}{container_info} topic={args.topic}")
     try:
         while True:
             time.sleep(1)
