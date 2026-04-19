@@ -50,13 +50,11 @@ def tmux_send(target: str, text: str, container: str | None = None) -> None:
         print(f"[tmux] error: {result.stderr.strip()}")
 
 
-def capture_pane(target: str, container: str | None = None, lines: int = 500) -> str:
-    """Return the last <lines> lines of a tmux pane as a string."""
+def capture_pane(target: str, container: str | None = None) -> str:
+    """Return the current visible content of a tmux pane."""
+    cmd = ["tmux", "capture-pane", "-t", target, "-p"]
     if container:
-        cmd = ["docker", "exec", container,
-               "tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"]
-    else:
-        cmd = ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"]
+        cmd = ["docker", "exec", container] + cmd
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result.stdout
 
@@ -86,14 +84,15 @@ def handle_claude_input(text: str, topic: str, pane: str,
                         container: str | None, stable_secs: float) -> None:
     """Send text to the Claude pane, wait for response, publish it back to ntfy."""
     before = capture_pane(pane, container)
-    before_line_count = len(before.splitlines())
+    before_lines = set(before.splitlines())
 
     time.sleep(0.2)
     tmux_send(pane, text, container)
     time.sleep(0.5)  # let Claude start before polling
 
     after = wait_for_idle(pane, container, stable_secs=stable_secs)
-    new_lines = after.splitlines()[before_line_count:]
+    new_lines = [l for l in after.splitlines()
+                 if l.rstrip() and l.rstrip() not in before_lines]
     response = "\n".join(new_lines).strip()
 
     if not response:
