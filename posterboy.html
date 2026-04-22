@@ -149,6 +149,56 @@
       box-shadow: 0 1px 2px rgba(0,0,0,0.1);
     }
 
+    .bubble.claude {
+      background: #eaf4ea;
+      color: #1a1a2e;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+      border-left: 3px solid #4caf50;
+    }
+
+    .bubble.permission {
+      background: #fff8e1;
+      color: #3e2700;
+      align-self: flex-start;
+      border: 1.5px solid #ffb300;
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      max-width: 92%;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 0.8rem;
+    }
+
+    .bubble.permission .perm-text {
+      max-height: 160px;
+      overflow-y: auto;
+      white-space: pre;
+    }
+
+    .perm-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .perm-btn {
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .perm-btn:active { opacity: 0.7; }
+    .perm-btn.yes    { background: #2e7d32; }
+    .perm-btn.no     { background: #c62828; }
+
     .empty-hint {
       text-align: center;
       color: #aaa;
@@ -318,9 +368,24 @@
       const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
       const hasNew = messages.length > lastCount;
       lastCount = messages.length;
-      messagesEl.innerHTML = messages.map(m =>
-        `<div class="bubble ${m.sender}">${escapeHtml(m.text)}</div>`
-      ).join("");
+      messagesEl.innerHTML = messages.map(m => {
+        if (m.type === "permission") {
+          return `<div class="bubble permission">
+            <div class="perm-text">${escapeHtml(m.text)}</div>
+            <div class="perm-actions">
+              <button class="perm-btn yes" onclick="sendKey('y')">Allow</button>
+              <button class="perm-btn no"  onclick="sendKey('n')">Deny</button>
+              <button class="perm-btn"     onclick="sendKey('a')">Always allow</button>
+              <button class="perm-btn"     onclick="sendKey('d')">Always deny</button>
+              <button class="perm-btn"     onclick="sendKey('s')">Skip</button>
+            </div>
+          </div>`;
+        }
+        if (m.type === "claude") {
+          return `<div class="bubble claude">${escapeHtml(m.text)}</div>`;
+        }
+        return `<div class="bubble ${m.sender}">${escapeHtml(m.text)}</div>`;
+      }).join("");
       if (hasNew && atBottom) scrollToBottom();
     }
 
@@ -342,12 +407,24 @@
       const body = data.message || "";
       if (!body) return;
 
-      const sender = data.title === username ? "me" : "them";
+      const title = data.title || "";
+      if (title === "permission") {
+        messages.push({ text: body, type: "permission" });
+        render();
+        scrollToBottom();
+        return;
+      }
+      if (title === "claude") {
+        messages.push({ text: body, type: "claude" });
+        render();
+        return;
+      }
+      const sender = title === username ? "me" : "them";
       if (sender === "me" && pendingSends.has(body)) {
         pendingSends.delete(body);
         return;
       }
-      messages.push({ text: body, sender });
+      messages.push({ text: body, sender, type: "normal" });
       render();
     }
 
@@ -431,6 +508,16 @@
       } finally {
         pendingSends.delete(text);
       }
+    }
+
+    async function sendKey(key) {
+      try {
+        await fetch(`${NTFY}/${topic}`, {
+          method: "POST",
+          body: key,
+          headers: { "Title": username },
+        });
+      } catch (_) {}
     }
 
     inputEl.addEventListener("input", () => {

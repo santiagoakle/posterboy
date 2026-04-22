@@ -28,23 +28,47 @@ from collections import deque
 
 NTFY_BASE = "https://ntfy.sh"
 
+# Single-key responses accepted by Claude Code permission prompts
+PERMISSION_KEYS = {"y", "n", "a", "d", "s", "yes", "no"}
+
+# Patterns that indicate Claude Code is waiting for permission
+PERMISSION_PATTERNS = [
+    "Allow",
+    "Do you want to proceed",
+    "(y/n",
+    "⏵⏵",
+]
+
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
 _published_echo: deque = deque()
 _echo_lock = threading.Lock()
+_permission_active = threading.Event()
 
 
 # ---------------------------------------------------------------------------
 # tmux / Docker helpers
 # ---------------------------------------------------------------------------
 def tmux_send(target: str, text: str, container: str | None = None) -> None:
-    """Send keys to a tmux pane, optionally via docker exec."""
+    """Send text + Enter to a tmux pane."""
     if container:
         cmd = ["docker", "exec", container, "tmux", "send-keys", "-t", target, text, "Enter"]
     else:
         cmd = ["tmux", "send-keys", "-t", target, text, "Enter"]
     print(f"[tmux] -> {text!r}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[tmux] error: {result.stderr.strip()}")
+
+
+def tmux_send_key(target: str, key: str, container: str | None = None) -> None:
+    """Send a single keypress (no Enter) to a tmux pane."""
+    if container:
+        cmd = ["docker", "exec", container, "tmux", "send-keys", "-t", target, key]
+    else:
+        cmd = ["tmux", "send-keys", "-t", target, key]
+    print(f"[tmux] key -> {key!r}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[tmux] error: {result.stderr.strip()}")
@@ -78,6 +102,54 @@ def wait_for_idle(target: str, container: str | None = None,
 
 
 # ---------------------------------------------------------------------------
+# Permission helpers
+# ---------------------------------------------------------------------------
+def is_permission_prompt(content: str) -> bool:
+    return any(p in content for p in PERMISSION_PATTERNS)
+
+
+def publish_ntfy(topic: str, message: str, title: str = "claude") -> None:
+    with _echo_lock:
+        _published_echo.append(message)
+    try:
+        req = urllib.request.Request(
+            f"{NTFY_BASE}/{topic}",
+            data=message.encode(),
+            method="POST",
+            headers={"Title": title},
+        )
+        urllib.request.urlopen(req)
+    except Exception as e:
+        print(f"[ntfy] publish error: {e}")
+
+
+def permission_monitor(pane: str, container: str | None, topic: str, poll: float = 1.0) -> None:
+    """Watch the Claude pane for permission prompts; publish and signal when detected."""
+    last_hash = None
+    print(f"[perm] monitoring {pane} for permission prompts")
+    while True:
+        try:
+            content = capture_pane(pane, container)
+            if is_permission_prompt(content):
+                h = hash(content.strip())
+                _permission_active.set()
+                if h != last_hash:
+                    last_hash = h
+                    relevant = [l for l in content.splitlines() if l.strip()]
+                    prompt_text = "\n".join(relevant[-15:])
+                    print(f"[perm] permission prompt detected, publishing to ntfy")
+                    publish_ntfy(topic, prompt_text, title="permission")
+            else:
+                if _permission_active.is_set():
+                    print(f"[perm] permission cleared")
+                _permission_active.clear()
+                last_hash = None
+        except Exception as e:
+            print(f"[perm] error: {e}")
+        time.sleep(poll)
+
+
+# ---------------------------------------------------------------------------
 # Claude pane handler
 # ---------------------------------------------------------------------------
 def handle_claude_input(text: str, topic: str, pane: str,
@@ -88,7 +160,7 @@ def handle_claude_input(text: str, topic: str, pane: str,
 
     time.sleep(0.2)
     tmux_send(pane, text, container)
-    time.sleep(0.5)  # let Claude start before polling
+    time.sleep(0.5)
 
     after = wait_for_idle(pane, container, stable_secs=stable_secs)
     new_lines = [l for l in after.splitlines()
@@ -100,20 +172,8 @@ def handle_claude_input(text: str, topic: str, pane: str,
         return
 
     print(f"[claude] response ({len(response)} chars):\n{response[:200]}{'...' if len(response) > 200 else ''}")
-
-    with _echo_lock:
-        _published_echo.append(response)
-    try:
-        req = urllib.request.Request(
-            f"{NTFY_BASE}/{topic}",
-            data=response.encode(),
-            method="POST",
-            headers={"Title": "claude"},
-        )
-        urllib.request.urlopen(req)
-        print("[claude] response published")
-    except Exception as e:
-        print(f"[claude] publish error: {e}")
+    publish_ntfy(topic, response, title="claude")
+    print("[claude] response published")
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +203,8 @@ def ntfy_listener(topic: str, container: str | None, target: str | None,
                             continue
                         if data.get("event") != "message":
                             continue
-                        # Skip responses we published ourselves
-                        if data.get("title") == "claude":
+                        title = data.get("title", "")
+                        if title in ("claude", "permission"):
                             continue
                         body = data.get("message", "")
                         if not body:
@@ -155,11 +215,15 @@ def ntfy_listener(topic: str, container: str | None, target: str | None,
                                 print(f"[ntfy] filtered echo: {body!r}")
                                 continue
                         if claude_pane:
-                            threading.Thread(
-                                target=handle_claude_input,
-                                args=(body, topic, claude_pane, container, stable_secs),
-                                daemon=True,
-                            ).start()
+                            if _permission_active.is_set() and body.strip().lower() in PERMISSION_KEYS:
+                                print(f"[perm] forwarding permission response: {body.strip()!r}")
+                                tmux_send_key(claude_pane, body.strip(), container)
+                            else:
+                                threading.Thread(
+                                    target=handle_claude_input,
+                                    args=(body, topic, claude_pane, container, stable_secs),
+                                    daemon=True,
+                                ).start()
                         elif target:
                             tmux_send(target, f"N:{body}", container)
                     else:
@@ -183,17 +247,7 @@ def outbox_monitor(watch_path: str, topic: str) -> None:
                 os.remove(outbox)
                 if content:
                     print(f"[outbox] publishing: {content!r}")
-                    with _echo_lock:
-                        _published_echo.append(content)
-                    try:
-                        req = urllib.request.Request(
-                            f"{NTFY_BASE}/{topic}",
-                            data=content.encode(),
-                            method="POST",
-                        )
-                        urllib.request.urlopen(req)
-                    except Exception as e:
-                        print(f"[outbox] publish error: {e}")
+                    publish_ntfy(topic, content, title="outbox")
             except Exception as e:
                 print(f"[outbox] error: {e}")
         time.sleep(1)
@@ -226,20 +280,25 @@ def main():
     if args.watch_path:
         os.makedirs(os.path.join(args.watch_path, "notifications"), exist_ok=True)
 
-    listener = threading.Thread(
+    if args.claude_pane:
+        threading.Thread(
+            target=permission_monitor,
+            args=(args.claude_pane, args.container, args.topic),
+            daemon=True,
+        ).start()
+
+    threading.Thread(
         target=ntfy_listener,
         args=(args.topic, args.container, args.tmux_target, args.claude_pane, args.stable_secs),
         daemon=True,
-    )
-    listener.start()
+    ).start()
 
     if args.watch_path:
-        monitor = threading.Thread(
+        threading.Thread(
             target=outbox_monitor,
             args=(args.watch_path, args.topic),
             daemon=True,
-        )
-        monitor.start()
+        ).start()
 
     mode = f"claude-pane={args.claude_pane}" if args.claude_pane else f"tmux={args.tmux_target}"
     container_info = f" container={args.container}" if args.container else " (local)"
