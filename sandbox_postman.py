@@ -28,15 +28,16 @@ from collections import deque
 
 NTFY_BASE = "https://ntfy.sh"
 
-# Single-key responses accepted by Claude Code permission prompts
-PERMISSION_KEYS = {"y", "n", "a", "d", "s", "yes", "no"}
+# Keys accepted as permission responses
+PERMISSION_KEYS = {"y", "n", "a", "d", "s", "yes", "no", "1", "2", "3"}
 
-# Patterns that indicate Claude Code is waiting for permission
+# Patterns that indicate an actual interactive permission dialog (not just the mode status bar)
 PERMISSION_PATTERNS = [
-    "Allow",
     "Do you want to proceed",
+    "Esc to cancel",
+    "Tab to amend",
     "(y/n",
-    "⏵⏵",
+    "❯ 1.",
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,6 +109,15 @@ def is_permission_prompt(content: str) -> bool:
     return any(p in content for p in PERMISSION_PATTERNS)
 
 
+def extract_permission_dialog(content: str) -> str:
+    """Return only the stable dialog lines, ignoring spinners and status bar."""
+    keep = {"Do you want to proceed", "Esc to cancel", "Tab to amend",
+            "(y/n", "❯ 1.", "❯ 2.", "❯ 3.", "Allow", "Deny", "ctrl+e"}
+    lines = [l for l in content.splitlines()
+             if any(k in l for k in keep)]
+    return "\n".join(lines)
+
+
 def publish_ntfy(topic: str, message: str, title: str = "claude") -> None:
     with _echo_lock:
         _published_echo.append(message)
@@ -131,7 +141,8 @@ def permission_monitor(pane: str, container: str | None, topic: str, poll: float
         try:
             content = capture_pane(pane, container)
             if is_permission_prompt(content):
-                h = hash(content.strip())
+                dialog = extract_permission_dialog(content)
+                h = hash(dialog)
                 _permission_active.set()
                 if h != last_hash:
                     last_hash = h
@@ -164,7 +175,9 @@ def handle_claude_input(text: str, topic: str, pane: str,
 
     after = wait_for_idle(pane, container, stable_secs=stable_secs)
     new_lines = [l for l in after.splitlines()
-                 if l.rstrip() and l.rstrip() not in before_lines]
+                 if l.rstrip()
+                 and l.rstrip() not in before_lines
+                 and not l.lstrip().startswith("❯")]
     response = "\n".join(new_lines).strip()
 
     if not response:

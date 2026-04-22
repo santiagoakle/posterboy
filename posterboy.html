@@ -373,11 +373,12 @@
           return `<div class="bubble permission">
             <div class="perm-text">${escapeHtml(m.text)}</div>
             <div class="perm-actions">
-              <button class="perm-btn yes" onclick="sendKey('y')">Allow</button>
-              <button class="perm-btn no"  onclick="sendKey('n')">Deny</button>
-              <button class="perm-btn"     onclick="sendKey('a')">Always allow</button>
-              <button class="perm-btn"     onclick="sendKey('d')">Always deny</button>
-              <button class="perm-btn"     onclick="sendKey('s')">Skip</button>
+              <button class="perm-btn yes" onclick="sendKey('1')">1 — Yes</button>
+              <button class="perm-btn no"  onclick="sendKey('2')">2 — No</button>
+              <button class="perm-btn"     onclick="sendKey('y')">y</button>
+              <button class="perm-btn"     onclick="sendKey('n')">n</button>
+              <button class="perm-btn"     onclick="sendKey('a')">a — always</button>
+              <button class="perm-btn"     onclick="sendKey('s')">s — skip</button>
             </div>
           </div>`;
         }
