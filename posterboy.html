@@ -195,9 +195,10 @@
       cursor: pointer;
     }
 
-    .perm-btn:active { opacity: 0.7; }
-    .perm-btn.yes    { background: #2e7d32; }
-    .perm-btn.no     { background: #c62828; }
+    .perm-btn:active           { opacity: 0.7; }
+    .perm-btn:disabled         { opacity: 0.35; cursor: default; }
+    .perm-btn.yes              { background: #2e7d32; }
+    .perm-btn.no               { background: #c62828; }
 
     .empty-hint {
       text-align: center;
@@ -373,12 +374,10 @@
           return `<div class="bubble permission">
             <div class="perm-text">${escapeHtml(m.text)}</div>
             <div class="perm-actions">
-              <button class="perm-btn yes" onclick="sendKey('1')">1 — Yes</button>
-              <button class="perm-btn no"  onclick="sendKey('2')">2 — No</button>
-              <button class="perm-btn"     onclick="sendKey('y')">y</button>
-              <button class="perm-btn"     onclick="sendKey('n')">n</button>
-              <button class="perm-btn"     onclick="sendKey('a')">a — always</button>
-              <button class="perm-btn"     onclick="sendKey('s')">s — skip</button>
+              <button class="perm-btn yes" onclick="sendKey('1',this)">1 — Yes</button>
+              <button class="perm-btn no"  onclick="sendKey('2',this)">2 — No</button>
+              <button class="perm-btn"     onclick="sendKey('a',this)">a — always</button>
+              <button class="perm-btn"     onclick="sendKey('s',this)">s — skip</button>
             </div>
           </div>`;
         }
@@ -511,7 +510,11 @@
       }
     }
 
-    async function sendKey(key) {
+    async function sendKey(key, btn) {
+      if (btn) {
+        btn.closest(".perm-actions").querySelectorAll(".perm-btn")
+          .forEach(b => b.disabled = true);
+      }
       try {
         await fetch(`${NTFY}/${topic}`, {
           method: "POST",

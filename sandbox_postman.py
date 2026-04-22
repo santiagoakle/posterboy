@@ -84,10 +84,23 @@ def capture_pane(target: str, container: str | None = None) -> str:
     return result.stdout
 
 
+_SPINNER_CHARS = frozenset("·✶✻✢✸✹✺")
+
+def is_busy(content: str) -> bool:
+    """Return True if Claude is still thinking or running a command."""
+    for line in content.splitlines():
+        s = line.strip()
+        if s and s[0] in _SPINNER_CHARS:
+            return True
+        if "Running…" in line or "Running..." in line:
+            return True
+    return False
+
+
 def wait_for_idle(target: str, container: str | None = None,
                   stable_secs: float = 2.0, poll: float = 0.3,
                   timeout: float = 120.0) -> str:
-    """Poll pane until output stops changing for stable_secs; return final content."""
+    """Poll pane until output stops changing for stable_secs and no spinner is active."""
     last = capture_pane(target, container)
     stable_since = time.time()
     deadline = time.time() + timeout
@@ -97,7 +110,7 @@ def wait_for_idle(target: str, container: str | None = None,
         if current != last:
             last = current
             stable_since = time.time()
-        elif time.time() - stable_since >= stable_secs:
+        elif time.time() - stable_since >= stable_secs and not is_busy(current):
             return current
     return capture_pane(target, container)
 
